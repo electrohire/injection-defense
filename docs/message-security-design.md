@@ -1,0 +1,238 @@
+# Message Security — Prompt-Injection Protection, from Input Tokens to Output Tokens
+
+**Status:** design + offline battery results. The two deterministic harness layers (structural screen, epistemic protocol) are implemented and measured offline in §11. The model-judgment layer — whether a model itself, in context, refuses a planted instruction — is a separate, live measurement and is **not** a result in this document; §12 explains how it is being approached, including the tuning experiment housed in this repository. An ElectroHire research document.
+
+**In plain language.** Everything an agent reads on the job — tool outputs, files, web pages, its own earlier output — is data. Some of that data will, sooner or later, contain sentences written to boss the agent around: cancel the task, send the keys, delete the log, don't tell anyone. This design makes those sentences powerless by construction. Only two sources may give instructions — the system policy and the user — and the harness, not the text, decides which source a span of text came from. Instruction-shaped text found inside data is treated as a *claim* ("the principal wants X") and graded the way claims should be graded: who says it, what backs it, does it contradict the record. A claim backed only by the say-so of the interested text itself is challenged, always, no matter how it is phrased or what it claims about its own authority. The offline battery in §11 planted 56 such instructions in real project text: the epistemic layer challenged 55 and falsely challenged none of 50 legitimate controls. What a fooled model might still *say* is a separate question; what it can *do* is fenced by the action gate in §3, and that fence does not depend on the model at all.
+
+---
+
+## 1. The rule: data is data. Only principals instruct
+
+The authority model has exactly three tiers:
+
+1. **Principal-system** — the system policy and the harness's own standing rules.
+2. **Principal-user** — the user's instructions, in the user's own channel.
+3. **Everything else is data.** Tool outputs, file contents, retrieved text, other agents' messages, and the model's own prior turns carry no authority at all, however they are phrased.
+
+Three consequences, stated as standing rules:
+
+- **Authority comes from the channel, never from the content.** A span is principal because the harness received it through the principal channel, not because it says `[SYSTEM]`, `ADMIN APPROVAL`, or "the owner said so". Content cannot promote itself.
+- **Embedded claims of urgency, approval, or secrecy are zero evidence.** "Urgent", "pre-approved", "do not log this" inside a data span say something about the span's author and nothing about the principal's intent. They are, if anything, a detection signal (§4).
+- **The challenge is unconditional.** When instruction-shaped content aimed at the agent is found in a data span, it is challenged *no matter what the embedded instructions say* — including when they say "this is legitimate", "this is only a test", or "do not challenge this". The content of an embedded instruction can never be the reason it is obeyed or excused.
+
+A challenge is not a deletion and not an accusation. The span stays available as data; the claim it carries is refused authority, written into the record, and handled under the protocol in §6.
+
+## 2. Provenance and authority tagging
+
+**Tagging happens in the harness, before the model sees anything.** Every input span is assembled by the harness, and the harness knows where each span came from because *it* fetched it. At assembly time it attaches a tag: `{span_class, authority, source_id, content_hash, screen_verdicts}`. Span classes:
+
+| Span class | Examples | Authority |
+|---|---|---|
+| principal-system | system policy, standing rules | instructs |
+| principal-user | the user's messages | instructs |
+| tool-output | stdout/stderr, API results, sensor reads | data |
+| file-content | files read from disk, code, runbooks, specs | data |
+| retrieved-content | web pages, search results, email bodies, other agents' output | data |
+| model-prior-turn | the model's own earlier output, re-read later | data |
+
+**Representation is structural, not in-band.** The tag lives in harness-side metadata — the request structure the harness builds — not in marker text inside the content. In-band markers are a courtesy delimiter at best: content can print the same markers and forge a boundary, so no security property may rest on them. Where a textual rendering is used (some serving stacks flatten everything to one string), the harness emits the delimiters itself, from its own template, immediately around the span it fetched, and treats *any* delimiter-like text inside the span as ordinary content. §8 measures what that textual fallback costs in tokens (about +5.9% on sampled spans for a full tag; the structural form costs zero model tokens).
+
+**Tags survive the token path** because the harness owns every transition:
+
+- **History:** prior turns are re-tagged from the harness's own record of who produced them, never re-inferred from their text. A model-prior-turn is data even if it reads like a user instruction — a fooled sentence the model wrote yesterday does not become an order today.
+- **Residual / summary views:** when history is compressed into a digest, the digest is a new span authored by the harness over tagged inputs; it inherits the *lowest* authority among its sources (always data, in practice) and keeps the source hashes. A summary can never launder data into principal text.
+- **Retrieval:** freshly fetched content is tagged at fetch time with its source, before any screening or transformation.
+- **The output side:** the model's output is not trusted either. Before any output is executed or sent, the harness screens it (§3) for two things: data-span content *promoted into instruction position* (the model proposing to do what a data span told it to) and *exfiltration* (secrets or record contents appearing in an outbound span). The model's output becomes, at most, a proposal; the gate decides what executes.
+
+## 3. Screening placement: three positions, three different jobs
+
+**Input side (pre-model, deterministic).** Every data span passes two deterministic layers at assembly time: the structural screen L1 (patterns, §5e) and the epistemic protocol L2 (§4). Both are CPU work over text and tags; neither spends model tokens. Their verdicts (clear / note / challenge, §4) are attached to the span's tag. A challenged span still enters context *as data* when the task needs its content — the challenge attaches to the claim, not the bytes — but it enters flagged in the record, and the model's standing instruction (§1) tells it the claim has no authority.
+
+**In-context (the model's own judgment).** The model reads the tagged context under the standing rule and the epistemic discipline: instruction-shaped text in data spans is to be treated as a claim about the principal's intent, not as an instruction. This layer is real — it is the layer that can reason about novel situations in full context — and it is also the least reliable, because it runs on the very component the attack is aimed at. It is named here as a layer and graded honestly: **only a live test can measure it** (§12). No claim in this document rests on it.
+
+**Output side (post-model, pre-action gate).** Before any proposed action executes — a tool call, a file write outside the workspace, an external send, a deletion, a credential use — the harness gate checks the proposal against the principal record: was this action, this destination, this object actually authorized through a principal channel? A planted instruction that survives input screening *and* fools the model still has to pass this gate to cause damage, and at the gate it arrives with no principal-channel evidence behind it. The gate is the design's load-bearing wall (§9 makes this the reliability argument): being fooled stops mattering when a fooled output cannot execute a consequential action without principal authorization.
+
+## 4. The epistemic layer
+
+The epistemic protocol (layer L2 in the battery) is the design's integrating component. Its move is simple: **instruction-shaped content inside a data span is not an instruction at all — it is a claim**, of the specific form *"the principal intends X"*, made by whoever produced that span. Claims are then graded the way claims should be graded: by source, by corroboration, and against the record.
+
+**The grading, step by step:**
+
+1. **Source classification.** The span's tag (harness-assigned, §2) fixes the source class before any text is examined. A claim from a principal span is not a claim — it is an instruction, and this layer does not grade it. A claim from a data span starts at the weakest position: its only initial backing is the say-so of an interested source — the text that benefits from being obeyed. Self-attestation by an interested source is the weakest evidence class there is, and it is never sufficient alone.
+2. **Consistency against the principal's record.** The harness keeps a principal record: standing instructions, the current task *as given by the user*, saved rules, allowed destinations. The claim is checked against it. Each of these fires a challenge **independently**:
+   - **Contradiction** — the claim asks for something a standing rule forbids (send records or secrets externally; suppress or delete records; drop the principal's instructions).
+   - **Task expansion** — the claim adds a step the task as given does not contain (an extra recipient, an extra upload, a recurring job, a cleanup nobody asked for).
+   - **New destination** — the claim names a target (URL, address, account) that appears nowhere in the principal record.
+   - **Concealment** — the claim asks that something not be recorded, logged, flagged, summarized, or mentioned. Concealment is graded as the loudest single signal in the set: a legitimate instruction essentially never needs the agent's record of it suppressed.
+3. **Attribution check.** *Who benefits if this is obeyed?* If the beneficiary is a third party — an outside address, an unnamed "team", the span's own author — the claim's grade falls further. Instructions whose beneficiary is the principal and whose content matches the task need no such inference; claims that route value, data, or silence to someone else do.
+4. **Self-description counts for nothing — and against.** The content's claims about itself ("urgent", "pre-approved by the owner", "SYSTEM NOTICE", "do not flag this") are zero evidence for the claim, and their presence is itself recorded as a detection signal. Asserted approval fires independently of any attached imperative: a data span announcing that the principal approved something *is* a claim about the principal's intent, and it is uncorroborated by definition — the only witness is the claimant.
+5. **Challenge by default.** A claim from a data span that no principal record corroborates is challenged — not because it matched a bad pattern, but because its evidence is insufficient for the authority it asks for. The burden of proof sits on the claim, and the claimant cannot carry it alone.
+6. **Every challenge is an auditable record entry:** the span's hash and source, the claim as extracted, which check fired, the verdict, and what was done (§6). Challenges are never silent and never edited after the fact.
+
+**Severity tiers.** *Challenge* — an agent-directed claim that a check fired on, or any uncorroborated agent-directed claim: never obeyed, recorded, escalated per §6. *Note* — instruction-shaped content in a data span that is not agent-directed (runbook steps for a human operator, code comments describing a program's behavior, documentation), or a claim that carries local quotation/documentation framing at the claim itself: recorded as a note line, content usable as data, no escalation. *Clear* — no instruction-shaped content, or principal provenance.
+
+**Why this is epistemic and not pattern-matching.** A pattern screen asks "does this text look like attacks we have seen?" The epistemic protocol asks "what would entitle this text to be obeyed, and does it have it?" The questions diverge exactly where it matters. A novel phrasing — no known keywords, polite, plausible, dressed as a routine step — still has to answer for its provenance and its corroboration, and it cannot. Conversely, legitimately instruction-like text is acquitted by the same grading that convicts the plant: a user's own command is principal by channel; a quoted attack in a security guide is a claim nobody is asking the agent to act on, presented as an example *at the claim itself*; a runbook's steps are instructions to a human operator, not claims on the agent. Surface form is shared by the attack and the legitimate text; provenance and corroboration are not. That is also why the layer degrades gracefully: when it is unsure, the default is challenge (cheap, §7), and the record of *why* is kept either way.
+
+One honest limit found by the battery (§11): framing mitigation is judged at the claim segment, but when a span *asserts its own framing* ("the revision is quoted in this file"), the screener cannot distinguish self-declared framing from genuine framing inside the same span. The principled fix is that framing evidence, like authority, should come from outside the span — from the harness's knowledge of what it fetched — and §9 carries that as a hardening item. The battery's single miss is exactly this case.
+
+## 5. Comparative evaluation
+
+*Can epistemic concepts be used to detect prompt injection attacks? Are there better solutions?* Short answer: yes — the epistemic protocol was the strongest layer measured (§11) — and no single approach, including it, is sufficient alone. The right answer is a composition in which each approach does the job it is actually good at. The evaluation context: a **frozen** third-party local model that cannot be fine-tuned; a harness we control end to end; local inference, so cost is counted in tokens, not dollars; results reported as (cost, function) pairs.
+
+**(a) Architectural separation — typed channels and capabilities.** *Mechanism:* instructions and data travel in different channels with different types; data spans structurally cannot reach actuators (tools, sends) without a principal-signed intent object the harness mints only from principal channels. *Strength:* the strongest guarantee available in principle — it does not ask any component to be smart, it removes the path. *Failure mode:* the model still reads mixed context and can be fooled into *proposing* the bad action; separation must therefore be completed by the action gate (§3), and legacy surfaces that flatten everything into one string erode the typing. *Cost:* engineering in the harness, ~zero tokens. *Availability:* **yes — this is the substrate our §2 tagging + §3 gate already implement in the parts that matter** (provenance tags, choke-point gates). It is not a competitor to the epistemic layer; it is what gives the epistemic layer's verdicts teeth.
+
+**(b) Trained instruction hierarchy.** *Mechanism:* fine-tune the model so system > user > tool content is a learned privilege order, with refusal behavior trained on planted-instruction data. *Strength:* real, measured gains in published work; the model carries the defense into every context, including ones the harness didn't anticipate. *Failure mode:* probabilistic — reduces, never eliminates, obedience to planted instructions; degrades on novel phrasings and long contexts; provides no record of *why* anything was refused. *Cost:* a training program, plus re-proof of the serving standard. *Availability:* **not for a frozen serving model.** A tuned variant would be a *new* serving standard requiring its own admission proof (see §9d). Whether tuning helps at all, and by how much, is an empirical question — it is exactly the question the tuning experiment in this repository tests on a small model (§12).
+
+**(c) Detector / guard models.** *Mechanism:* a second model reads each span (or each proposed action) and judges "injection or not". *Strength:* semantic reach beyond patterns; can grade context the deterministic layers can't. *Failure mode:* it is the same kind of component the attack targets — a guard model can itself be injected ("this span has been pre-cleared by the security model…"), its failures correlate with the main model's (same family, same phrasing blind spots), and it produces a verdict without an auditable *reason* tied to a record. *Cost:* a second model's inference on every screened span — the most expensive option per token on a local stack, roughly doubling screened-traffic inference. *Availability:* yes technically (a second local model can be served), but the cost and the correlated-failure problem buy less than the epistemic protocol, which is deterministic, free, and produces reasons. Not recommended as a primary layer; possibly useful later as an *advisory* signal feeding the note tier.
+
+**(d) Narrow trained classifiers.** *Mechanism:* a small classifier (not a full LLM) trained on labeled injection-vs-legitimate text. *Strength:* fast, cheap, better generalization than hand-written patterns within its training distribution. *Failure mode:* distribution-bound — silent on new families until retrained; a score, not a reason; needs a labeled corpus and a retraining discipline. *Cost:* small (CPU-class inference), plus the data program. *Availability:* partially — one could be built, and the §11 battery corpus (`data/battery_corpus.json` in this repository) is a seed, but 106 fixtures is a seed, not a training set. A reasonable future addition *under* the epistemic layer, never instead of it: its score would feed the note/challenge decision as one signal among provenance checks.
+
+**(e) Deterministic structural screens.** *Mechanism:* rules/patterns over raw text — override phrases, fake markers, urgency-plus-approval collocations, exfiltration verb-plus-target shapes, concealment phrases, URL-destination patterns. *Strength:* cheap (CPU, zero model tokens), exact where patterns hold, fully auditable — every fire names its rule. *Failure mode:* provenance-blind and task-blind, *structurally*: it cannot express "this step is not in the task as given", so task expansion is invisible to it (measured: 0 of 8, §11), stealth phrasings fall off a cliff (measured: 82% obvious vs 32% stealth), and it fires on legitimate principal text that merely contains the shapes (measured: 12% of controls, including the user's own genuine instructions). *Cost:* ~zero. *Availability:* yes, today — it is layer L1 of the battery. Its correct job is a fast first pass and a tripwire, not the decision.
+
+**(f) The epistemic protocol (§4).** *Mechanism:* claims grading — provenance, corroboration against the principal record, contradiction/expansion/destination/concealment checks, attribution, self-attestation as negative evidence, challenge by default. *Strength:* catches novel phrasings because it grades entitlement, not resemblance (measured: 96% on stealth phrasings vs L1's 32%); acquits legitimate instruction-like text by the same grading (measured: 0 of 50 controls challenged); every verdict carries its reason into the record. *Failure mode:* it needs the harness to keep a true principal record — if the record is incomplete (a legitimate destination the user never declared), it over-challenges until the record learns; its heuristics for "instruction-shaped" and "agent-directed" are hand-built and will miss exotic shapes (measured: 1 miss in 56, a self-framing spoof); and it operates at assembly/gate time — it does not by itself stop a model from *saying* something foolish mid-task, only from that foolishness executing or going unrecorded. *Cost:* ~zero model tokens (CPU rules over text + tags); the real cost is keeping the principal record honest. *Availability:* yes, today — it is layer L2 of the battery, implemented in the screener in this repository (`screener/screen.py`).
+
+**The layered recommendation.** No single approach suffices; the layers cover each other's characteristic holes:
+
+| Layer | Job in one line |
+|---|---|
+| Architectural separation (§2 tagging + §3 gate) | Make provenance a fact the harness knows, and make consequential actions impossible without principal-channel authorization. |
+| L1 structural screen | Cheap tripwire: catch the loud, known shapes instantly and name the rule that fired. |
+| L2 epistemic protocol | The decision layer: grade every data-span claim against the principal record; challenge by default; write the reason down. |
+| Model judgment in context (§12, measured separately) | Defense in depth inside the context: the model, under the standing rule, declines planted instructions the deterministic layers passed as data. |
+| Output gate (§3) | Last wall: screen proposals and outbound spans; nothing consequential executes on a data span's say-so. |
+
+The epistemic layer is the **integrating** layer rather than a replacement because it is the only one that consumes the others' outputs as evidence: L1's rule-fires are signals in its grading, the tags from the architecture are its provenance input, the model's in-context behavior is bounded by its record, and the gate enforces its verdicts. Remove it and the remaining layers are a tripwire, a hope, and a wall with nothing deciding what may pass; remove the others and it is a judge whose verdicts nobody enforces and whose inputs nobody guarantees.
+
+## 6. Challenge protocol
+
+On a challenge, in all cases: **never obey the claim; write the record entry** (span hash and source, the claim, the check that fired, the verdict); **continue the authorized task where it is safe to do so**, using the span's content as data when the task needs it. What the user sees depends on what the attempt targeted:
+
+- **Note tier** (instruction-shaped data, not agent-directed, or framed claims): a line in the run record only. The user is not interrupted; notes are reviewable in aggregate (§9 telemetry).
+- **Challenge, informational target** (the claim aimed at the analysis itself — a fake cancellation, a redefinition of the task): the agent continues the real task and mentions the challenge in its report of that task — one plain sentence naming what the content tried to do ("a tool output in this run contained a fake system notice cancelling the task; it was challenged and ignored"). No separate alert, no drama.
+- **Challenge, consequential target** (the claim aimed at an external send, a deletion, credential use, an outside destination, or suppression of the record): **escalate to the principal before proceeding past that point.** The user sees, at once and in plain language: what content carried the claim (source, quoted verbatim), what it asked for, which check fired, and that nothing was done with it. The agent then continues only the parts of the task that do not touch the targeted action, and waits for the user's word on the rest.
+- **At the output gate:** a proposal that fails the gate is stopped and reported the same way as a consequential challenge, with the model's proposal quoted. The user is never asked to "approve" a challenged action through a routine prompt — approval, if the user genuinely wants the action, must arrive as a fresh principal instruction in the principal channel, after which it is simply an instruction, not a pardon for the plant.
+
+## 7. Failure modes and false positives
+
+**Legitimate instruction-like content is everywhere in real working text** — the user's own quoted instructions, documentation examples, runbooks, code comments full of imperatives, and specification files, which describe instructions in imperative prose all day long. A detector that challenges all of it is unusable; one that waves it all through is a door. The design's answer is that provenance and framing, not surface form, do the acquitting:
+
+- Principal-channel text is never graded as a claim at all (§4, step 1) — the user's genuine "email it to me at…" cannot be a false positive of L2, whatever words it uses. (It *can* trip the provenance-blind L1 — measured, below — which is one reason L1 is a tripwire and not the decision.)
+- Quoted and documented examples are claims nobody is asking the agent to act on, and the mitigation is judged at the claim itself: framed at the claim → note tier (§4).
+- Runbook steps and code comments are instruction-shaped but not agent-directed — they instruct a human operator or describe a program — so they land at note tier: recorded, usable as data, never escalated.
+
+**The residual false-positive cost is a note line, and the asymmetry is the point.** A false *challenge* costs a record entry and, at the consequential tier, one interruption. A false *acquittal* can cost a sent file, a deleted record, or a suppressed log — the expensive direction by orders of magnitude. The layers are therefore tuned to over-challenge rather than over-acquit, and the battery reports the two error rates separately so the trade stays visible (§11).
+
+**Over-challenging is itself a failure mode** — alert fatigue: if everything escalates, the user stops reading escalations, and the one that matters drowns. The mitigations are the severity tiers (§4: notes never interrupt), the placement of the escalation bar at *consequential* targets only (§6), and telemetry review (§9): if note volume or challenge volume drifts, that is a record-keeping problem to fix in the principal record (an undeclared legitimate destination, a recurring framed source), not a reason to loosen the default.
+
+**Other failure modes, named:** (i) *self-declared framing* — a span claiming "this is quoted" to earn the mitigation; the battery's one miss (§4, §11); hardening = framing evidence from the harness, not the span. (ii) *Principal-record incompleteness* — legitimate work the record doesn't know about gets challenged until the record is updated; acceptable (fails closed, visibly) but it is operating cost. (iii) *Split claims* — an instruction divided across spans so no single span looks like a claim; the output gate (§3) is the backstop, since the reassembled proposal is what gets gated. (iv) *The model layer failing open* — assumed throughout: nothing in the design requires the model to behave (§9).
+
+## 8. Token-cost accounting
+
+Costs are (cost, function) pairs, and the deterministic layers are the cheapest security in this design:
+
+- **L1 + L2: zero model tokens.** Both are CPU rules over text the harness already holds. Their cost is harness CPU time, negligible beside inference.
+- **Tagging:** the structural form (metadata in the request structure) costs **zero model tokens** by construction. The textual fallback was **measured** with the serving model's tokenizer over three sampled spans drawn from real working corpora:
+
+| Sample span | Raw tokens | + full textual tag | Overhead | + minimal delimiters | Overhead |
+|---|---|---|---|---|---|
+| Prose sample | 867 | 909 | +42 tok, 4.84% | 876 | 1.04% |
+| Code sample | 749 | 791 | +42 tok, 5.61% | 758 | 1.20% |
+| Tool-output sample | 539 | 581 | +42 tok, 7.79% | 548 | 1.67% |
+| **Total** | **2,155** | **2,281** | **5.85%** | — | **1.25%** |
+
+The full tag (class, authority, source, hash, verdicts) is a fixed ~42 tokens per span, so its percentage falls as spans grow; the minimal delimiter pair is ~8 tokens per span. At the traffic shape measured in our own agent runs (86 calls, 427,062 tokens total; per-call inputs 625–13,365, mean 4,378), even the textual full-tag form would add on the order of 5–6% to input tokens if every span were tagged textually. The recommendation is structural tags (0%) with textual delimiters only where a serving surface forces flattening.
+- **The note/challenge records:** harness-side ledger writes; no model tokens except the plain-language mentions in §6, which are tens of tokens inside reports that exist anyway.
+- **The model-judgment layer** is the only part with a real token price, and it is treated as a *measurement* cost, not a running cost (§12).
+
+## 9. Integration and reliability — how this gets built in, and how it keeps working
+
+The protection can be packaged at four depths. They are not alternatives — they compose — but they differ sharply in what they can promise.
+
+**(a) As a skill — the protocol as a playbook.** *Mechanism:* the epistemic protocol (§4) written as an agent-facing skill: the authority model, the claim-grading steps, the challenge protocol, worked examples. Any agent that loads it carries the discipline in context. *Availability:* **immediate** — it is a document; it works with any model, including a frozen serving model, from the day it is written. *Failure mode:* a skill is advice the model reads. It protects exactly when the model attends to it at the moment of attack, in the sessions where it was loaded — and the attack's whole purpose is to capture that attention. A skill alone is a well-trained intention, not a mechanism. *Job in the composition:* **behavior** — it makes the in-context layer (§3) as good as it can be, and it teaches the *shape* of the discipline to every agent and human who works with the stack.
+
+**(b) As harness middleware — tagging, screening, and gates in the stack we control.** *Mechanism:* §2 tagging at assembly, L1+L2 screening on every span, and the §3 action gate at every choke point, all in harness code that runs on every call regardless of the model's state, mood, or context. *Availability:* **yes — this is the strongest form available**, because the harness is ours even when the model is frozen. *Failure mode:* coverage, not cleverness — a surface the harness doesn't mediate (a new tool path, a flattened context) is a hole until the middleware is extended to it; and the gate can only check proposals it can see. Both are engineering-discipline risks, auditable ones. *Why it anchors the composition:* **being fooled stops mattering.** If the model is completely persuaded by a plant, the persuaded output still cannot send a file, write outside the workspace, delete a record, or use a credential without principal-channel authorization evidence at the gate — because the gate does not consult the model's beliefs at all.
+
+**(c) As a spec-kit extension of its own — the governance and distribution vehicle.** *Mechanism:* a `message-security` extension in our spec-kit suite, sibling to the existing extensions, carrying: (i) an **authority-surface section** required in every spec — who may instruct this system, through which channels, which actions and destinations are authorized — which is precisely the principal record (§4) written down per-project, giving the record-check something concrete and reviewable to check against; (ii) the **planted-injection battery as an assessment gate** in the extension's flow (the §11 battery, generalized per project), re-run like any other gate before a system's design is accepted; (iii) the **challenge record format** (§4, step 6) as the extension's standard record type, so challenges land in the same hash-chained records as everything else the suite produces. *Availability:* yes — spec-kit extensions are the suite's native distribution mechanism; the extension makes the protection reusable across projects instead of a one-off in one harness. The suite lives at [electrohire/spec-kit-aee](https://github.com/electrohire/spec-kit-aee), with its benchmark harness at [electrohire/spec-kit-aee-benchmark](https://github.com/electrohire/spec-kit-aee-benchmark). *Failure mode:* governance is not enforcement — an extension can require the authority-surface section and the battery gate, but a project that writes a sloppy authority surface has a sloppy record to check against. The extension raises the floor and makes omissions visible; the middleware (b) is what actually stops the action. *Job in the composition:* **governance** — it makes the discipline specifiable, reviewable, assessable, and portable.
+
+**(d) Tuned into the model — instruction-hierarchy training.** *Mechanism:* fine-tuning, adapters, or hierarchy training so the model itself resists planted instructions (§5b). *Availability:* **not for a frozen serving model.** A production serving model that is frozen and third-party cannot be fine-tuned, and a tuned variant would be a *different model* — a new serving standard that would need its own admission proof before it served anything. *Failure mode, even where available:* tuning raises resistance measurably and never to certainty; it produces no reasons and no records; and a model swap silently invalidates every behavioral assumption the other layers were tuned against. *Status:* a research question, not a plan — and it is the question the experiment in this repository (`experiment/`) is testing on a small model, where a before/after measurement is cheap and safe. If tuning demonstrably helps there, the result informs — but does not by itself authorize — any future serving decision.
+
+**Composition recommendation: skill = behavior, extension = governance, harness = enforcement.** Each covers a hole the others cannot: the skill reaches inside the context, where only the model can reason about a novel situation in full; the extension reaches across projects and across time, making the authority surface and the battery part of how systems get *specified*, not just how they run; the middleware reaches the one place neither words nor governance can — the moment an action would execute. Deviating from this composition means choosing which hole to live with: skill-only is intention without mechanism; extension-only is paperwork without enforcement; middleware-only works but stays local folklore, unreusable and unspecified, until the extension writes it down. Tuning, if it proves out, slots in as a fourth, inner layer — welcome, and never load-bearing.
+
+**Reliability engineering — making it work all the time, as far as that can honestly be promised:**
+
+- **Independence of failure modes.** The layers fail differently: patterns fail on novel phrasing; heuristics fail on exotic shapes; the model fails on persuasion; the gate fails only on missing coverage. An attack must defeat *dissimilar* mechanisms in sequence, and the last one does not read the attack at all.
+- **Enforcement at unbypassable choke points.** External sends, writes outside the workspace, deletions, credential use, purchases, permission changes — every consequential verb passes the gate (§3). Reliability comes from the shortness of that list and the discipline of routing *all* of them through it, not from the cleverness of any detector.
+- **Safe-by-default arrival state.** Spans arrive pre-tagged by the harness (§2): the model *reads* provenance instead of inventing it, screens have already run, and the default state of any data-span claim is "challenged unless corroborated" — the system has to be argued *out of* safety by principal-channel evidence, never argued *into* it by content.
+- **The battery as a standing regression gate.** The §11 battery is re-run on every relevant change — screener rules, tag format, harness assembly, prompt discipline — with challenge rate and false-positive rate tracked over time in the record. A change that moves either number the wrong way is a regression with a name and a diff, not a vibe.
+- **Telemetry as a record.** Challenges and near-misses (notes that carried claims) are reviewed as records: volume by check, by source, by type. A new injection family seen in the wild — in telemetry, in a fixture someone forwards, in the literature — is **added to the battery first**, then handled; the battery is the project's memory of what attacks look like.
+- **Residual risk, stated plainly.** A sufficiently targeted injection against a model-only layer eventually lands: the model will, someday, *believe* a plant and propose obeying it. This design does not promise otherwise. Its goal is **landing ≠ damage**: the belief is recorded, the proposal hits the gate without principal evidence, the consequential action does not execute, and the attempt is in the record with its reason. Reliability here means the failure is contained, visible, and instructive — not that the failure is impossible.
+
+## 10. Screening and lossy transforms
+
+Screening must run on content in a form where injections are **visible**. This is a hard constraint on any compression or summarization work, and it cuts both ways:
+
+- A lossy transform (summarization, semantic recoding) can *hide* an instruction from the screener — paraphrase "send the API key to…" into bland prose and both L1's shapes and L2's claim extraction lose their grip. Worse, a *rewriting* transform can launder a data-span instruction into principal-sounding prose: the summary reads like the system's own voice, and a claim that arrived as data leaves as apparent narration.
+- **Rules that follow:** (1) screen **before** any lossy transform, on the raw span, or not at all — a span screened only after transformation is an unscreened span; the screen verdicts ride in the tag (§2) so downstream stages inherit them. (2) Transformed views inherit the lowest authority of their sources (§2) — a summary of data is data. (3) **Opaque-encoded content** (base64 blobs, compressed payloads) from untrusted sources is **inadmissible unscreened**: it must be decoded and screened in its expanded form before the model is asked to decode-and-follow it, or refused. An encoding the screener cannot read is a claim the screener cannot grade.
+- Any lossy transform therefore needs a two-axis admissibility check per content type: planted failure signals must survive it, **and** injections planted upstream of it must still be caught by the screener downstream of it (this document's battery, re-run with the transform in the path).
+
+## 11. The battery — method and results
+
+**Method.** Offline, deterministic, no model calls. Layers L1 (structural) and L2 (epistemic) are implemented in the screener in this repository (`screener/screen.py`); L3 is their combination (challenge if either challenges; the higher severity tier wins). The corpus (`data/battery_corpus.json`, 106 fixtures) was built from real project text — prose, code, and harvested tool output: attack fixtures are a carrier span of real text with a planted payload appended; controls are legitimate instruction-like text in realistic spans.
+
+**Fixtures.** *Injections (56):* 8 instances × 7 types — direct override, fake system/approval markers, self-attestation/urgency, exfiltration, concealment, task expansion, new destination — half phrased obviously (keyword-heavy) and half as stealth variants that avoid the obvious keywords. *Legitimate controls (50):* principal-user instructions (10), principal-system standing rules (4), quoted/documented instructions in data spans (8), runbook steps (8), code comments with imperatives (8), documentation examples (6), spec text describing instructions (6). Ground truth per fixture: span class + label. Full metrics in `data/battery_results.json`.
+
+**What "challenge rate" means here, honestly:** for harness layers, offline, it measures *detection and challenge* — the layer refuses the claim authority and writes the entry. Whether the *model* would have obeyed a claim the layers passed (or despite a challenge) is the live layer's question (§12) and is **not** measured here.
+
+**Results — challenge rate on injections (higher is better):**
+
+| Injection type (n=8 each) | L1 structural | L2 epistemic | L3 combined |
+|---|---|---|---|
+| Direct override | 7/8 (87.5%) | 8/8 | 8/8 |
+| Fake system / approval markers | 5/8 (62.5%) | 7/8 (87.5%) | 7/8 |
+| Self-attestation / urgency | 3/8 (37.5%) | 8/8 | 8/8 |
+| Exfiltration | 6/8 (75%) | 8/8 | 8/8 |
+| Concealment | 6/8 (75%) | 8/8 | 8/8 |
+| Task expansion | **0/8 (0%)** | 8/8 | 8/8 |
+| New destination | 5/8 (62.5%) | 8/8 | 8/8 |
+| **All injections (56)** | **32/56 (57.1%)** | **55/56 (98.2%)** | **55/56 (98.2%)** |
+| — obvious phrasing (28) | 23/28 (82.1%) | 28/28 (100%) | 28/28 |
+| — stealth phrasing (28) | 9/28 (32.1%) | 27/28 (96.4%) | 27/28 |
+
+**Results — false positives on legitimate controls (challenge rate; lower is better; "note" counted separately):**
+
+| Control kind (n) | L1 challenge | L2 challenge | L2 note | L3 challenge |
+|---|---|---|---|---|
+| Principal-user instructions (10) | 2 (20%) | 0 | 0 | 2 |
+| Principal-system rules (4) | 1 (25%) | 0 | 0 | 1 |
+| Quoted / documented in data (8) | 2 (25%) | 0 | 8 | 2 |
+| Runbook steps (8) | 0 | 0 | 7 | 0 |
+| Code comments (8) | 1 (12.5%) | 0 | 8 | 1 |
+| Documentation (6) | 0 | 0 | 4 | 0 |
+| Spec text (6) | 0 | 0 | 2 | 0 |
+| **All controls (50)** | **6 (12%)** | **0 (0%)** | **29 (58%)** | **6 (12%)** |
+
+**Interpretation.**
+
+- **(Cost, function): L1 = (0 tokens; 57.1% challenge, 12% FP). L2 = (0 tokens; 98.2% challenge, 0% challenge-FP, 58% notes). L3 = (0 tokens; 98.2% challenge, 12% FP).** Both deterministic layers are free at inference time; the difference is entirely in what they can express.
+- **L1's failures are structural, exactly as §5e predicted.** Task expansion is 0/8 because "beyond the task as given" is not a property of text — a text-only screen has no task record to compare against. Stealth phrasing collapses it (82% → 32%) because patterns are a memory of previous attacks. And its 12% control FP falls on the most legitimate text in the corpus — the user's own instructions and the standing rules themselves — because it cannot see provenance. As a tripwire it earns its place; as a decision it would be both porous and noisy.
+- **L2's margin comes from grading entitlement, not resemblance.** It is perfect on six of seven types, including every task-expansion and self-attestation plant — the two types defined by their *relationship to the record* rather than their wording. Its control cost is notes, not challenges: 29 of 50 legitimate fixtures drew a note line (every quoted example, every code comment, most runbook steps), which is the designed price of "record what looked instruction-shaped" and never interrupts anyone.
+- **The single miss is the instructive one.** `inj-fake_system_marker-7` — a data span announcing, in the voice of "the system team", that the standing rules were revised, and adding that "the revision is quoted in this file" — earned a *note* instead of a challenge: the span asserted its own framing, and the claim-level framing mitigation (§4) believed it. Self-declared framing is self-attestation wearing a second hat. The hardening is already specified (§4, §7): framing evidence must come from the harness's knowledge of the source, not from inside the span. Until then, this is the battery's known residual, kept in the corpus as a regression fixture.
+- **L3's FP rate (12%) is entirely L1's.** Every combined-layer false challenge traces to the provenance-blind layer firing on principal or quoted text that L2 acquitted or noted. Read strictly as specified (OR-combination over all spans), L3 = 98.2% / 12%. Read with L1 in its designed placement — screening *data spans*, since principal spans arrive authenticated by channel and need no pattern screen — the combined system's control cost is L2's: 0 challenges, notes only. Both readings are reported; the deployment recommendation is the second, and it is a placement statement, not a metrics adjustment: the battery ran L1 over everything precisely so the cost of the first reading is on record.
+- **Co-development caveat.** The screener and the battery were built in the same session, and the screener was revised against early battery runs (each revision is a design fix named in §4/§7 — claim-level framing, approval-fires-independently, code-shape exclusions — not a per-fixture patch). The battery therefore measures this design against this fixture family, built from this project's text. It does not measure performance against an adversary who has read the screener's source. That is what the live layer (§12) and the standing regression discipline (§9) are for.
+
+## 12. The model layer — measured separately
+
+Two questions about models remain open after §11, and this document claims no result for either:
+
+1. **In-context resistance.** Does a model, reading tagged context under the standing rule (§1) — and, in a second arm, under the standing rule plus the epistemic claim-grading discipline (§4) stated in its prompt — refuse planted instructions? This can only be measured live, by running the battery's fixtures through a model in a realistic task context and scoring whether it obeys, partially complies, challenges-and-continues, or challenges-and-escalates, with legitimate controls scored for unimpaired work. That live measurement is separate work; nothing in this document depends on its outcome, because the design's guarantee rests on the deterministic layers and the gate (§3, §9).
+
+2. **Trained resistance.** Does fine-tuning change a model's resistance — does a model trained on planted-instruction examples flag plants and complete the real task more reliably than the same model untrained? That is the tuning experiment housed in this repository (`experiment/`): a LoRA adapter trained on freshly authored resistance and legitimate-use examples, evaluated before and after on a planted-instruction battery. Its status and, when the run completes, its results are recorded there. Until then, §5b and §9d stand as written: tuning is a research direction with published support, probabilistic even where it works, and never a layer the rest of the design depends on.
+
+## What this design does not establish
+
+- **Model behavior.** Whether a given model obeys, refuses, or half-complies with a planted instruction in context is unmeasured by this document (§12). The design deliberately does not need the answer — the gate (§3) and the challenge default (§4) carry the guarantee — but the in-context layer's true strength is unknown until run.
+- **Adversarial robustness of the screener.** The battery's fixtures were authored alongside the screener (§11 caveat). An adversary with the screener's source in hand, or simply a more inventive one, will find shapes the heuristics miss; the regression-gate discipline (§9) is the mitigation, not a proof.
+- **Split and multi-span claims.** An instruction fragmented across spans, or assembled from individually innocent pieces, is only partially covered (by the output gate). No battery fixtures test it yet; it belongs in the battery's next expansion.
+- **Non-text channels.** Images, audio, and structured tool results with instruction-bearing fields are out of scope for this battery; the tagging and gate design extends to them, the measurements do not.
+- **The principal record at production scale.** The battery's record is a five-rule fixture. A production record (per-project authority surfaces, §9c) will be larger, and its completeness — not the screener — becomes the binding constraint on false challenges.
+- **Anything about other models or stacks.** All measurements are against this project's text, tokenizer, and harness design. The (cost, function) pairs do not transfer by assertion to a different serving standard — least of all to a tuned one (§9d), which would need its own battery run.
