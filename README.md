@@ -33,21 +33,26 @@ This repository houses the **model-tuning experiment** and the measurement artif
 
 **The method, in brief.** A training set of freshly authored examples pairs ordinary tasks with data spans carrying planted instructions (the correct response flags the plant and does the task) and with legitimate instruction-like data — runbook steps, code comments, documentation — that must be used normally, with no flag. The evaluation plants instructions in realistic carrier text across seven attack families (direct override, fake system/approval markers, self-attestation and urgency, exfiltration, concealment, task expansion, and new destinations), half phrased obviously and half phrased to avoid the obvious keywords. Resistance is scored before and after tuning on identical fixtures.
 
-**Status: experiment in progress.** The training data has been built and is in this repository. No training run has completed yet, and this repository claims no tuning results. When the run completes, its results land in `experiment/results/` and this status line is updated.
+**Status: experiment complete** (run 2026-10-29). The headline is a trade-off, stated plainly: tuning raised the model's resistance from **0% to 48.2%** of planted instructions challenged-not-obeyed (0 of 56 → 27 of 56), and raised false challenges on legitimate content from **14% to 57%** (4 of 28 → 16 of 28 controls). Tuning helps, and it is not sufficient alone — a tuned model that flags more than half of legitimate instruction-like content has traded one failure mode for another. That is why the position of this project is the layered stack: tuning as a non-load-bearing layer behind the deterministic screens and the action gate. Full results are in `experiment/results/` and `experiment/RESULTS.md`.
 
 ### Layout
 
 | Path | What it is |
 |---|---|
 | `docs/message-security-design.md` | The full defense design: authority model, provenance tagging, screening placement, the epistemic layer, a comparison of alternative approaches, the challenge protocol, reliability engineering, and the battery results. |
-| `experiment/` | The tuning experiment: `README.md` (question, method, status), `build_training_data.py` (training-set builder), `training_data.jsonl` (the built training set), `results/` (where run results land). |
-| `data/` | The planted-instruction battery: `battery_corpus.json` (106 fixtures — 56 planted instructions and 50 legitimate controls) and `battery_results.json` (the measured results of the deterministic screening layers). |
-| `screener/` | `screen.py` — the deterministic screener (structural screen + epistemic protocol) that produced the battery results. |
+| `docs/red-team.md` | The red-team report: how the deterministic screener was attacked with 47 new phrasings and a sealed 25-phrasing held-out set, the fixes that followed, and the weaknesses that remain open. |
+| `experiment/` | The tuning experiment: `README.md` (question, method, status), `DESIGN.md` (pre-run design), `experiment.py` (run script), `build_training_data.py` (training-set builder), `training_data.jsonl` (the built training set), `RESULTS.md` (results write-up), `results/` (raw and scored run outputs). |
+| `data/` | The planted-instruction battery: `battery_corpus.json` (106 fixtures — 56 planted instructions and 50 legitimate controls) and `battery_results.json` (the measured results of the original deterministic screener). |
+| `screener/` | `screen.py` — the deterministic screener (structural screen + epistemic protocol), in its hardened post-red-team version; the original version is in git history. |
 | `PROVENANCE.md` | Where each migrated file came from, with SHA-256 hashes so the copies can be audited against their originals. |
 
 ### The battery result so far
 
-The deterministic harness layers were measured offline against the battery in `data/`. The epistemic layer challenged **55 of 56** planted instructions (98.2%) — including 27 of 28 phrased to avoid obvious keywords — and falsely challenged **0 of 50** legitimate controls. A purely structural pattern screen challenged 57.1% of the plants and 12% of the controls. Those are measurements of the *harness* layers: they show planted claims being refused authority and written into the record. Whether a *model*, in context, resists a plant is a separate question — the one the tuning experiment in this repository is designed to help answer. Details and honest limits are in the design document.
+The deterministic harness layers were measured offline against the battery in `data/`. The original epistemic layer challenged **55 of 56** planted instructions (98.2%) — including 27 of 28 phrased to avoid obvious keywords — and falsely challenged **0 of 50** legitimate controls. A purely structural pattern screen challenged 57.1% of the plants and 12% of the controls. Those are measurements of the *harness* layers: they show planted claims being refused authority and written into the record.
+
+A red team then attacked the screener with phrasings the battery never tried — and the narrowness showed: the original decision layer challenged only 6 of 47 new attack phrasings. The hardened screener that followed challenges **56 of 56** on the original battery (still 0 of 50 controls), 45 of 47 on the red-team scenario suite, and 23 of 25 on a sealed held-out set, with two held-out misses left honestly unpatched. The full account is in [docs/red-team.md](docs/red-team.md).
+
+Whether a *model*, in context, resists a plant is a separate question — the one the tuning experiment in this repository answers, with the trade-off reported in the status section above. Details and honest limits are in the design document.
 
 ## Sibling pieces
 
