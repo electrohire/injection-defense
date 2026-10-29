@@ -14,11 +14,12 @@
 
 ## Status
 
-**In progress.** The training data has been built and is committed here. The training run and the before/after evaluation have not yet completed, and no tuning results are claimed anywhere in this repository. When the run completes:
-
-- raw and scored outputs land in [`results/`](results/),
-- this status section is updated with the headline numbers and a link to them,
-- and the repository README's status line is updated to match.
+**Complete** (run 2026-10-29). Headline: the base model challenged
+**0 of 56** planted instructions; the LoRA-tuned model challenged
+**27 of 56 (48.2%)** — and false challenges on legitimate controls rose from
+**4 of 28 (14.3%) to 16 of 28 (57.1%)**. Tuning measurably raised resistance
+and just as measurably damaged discrimination; the trade-off is the finding.
+Full results: [`RESULTS.md`](RESULTS.md) and [`results/`](results/).
 
 ## Files
 
@@ -26,4 +27,7 @@
 |---|---|
 | `build_training_data.py` | Builds `training_data.jsonl`: resistance and legitimate examples with newly authored carrier and payload text. |
 | `training_data.jsonl` | The built training set: 132 examples, each `{id, kind, family, system, user, assistant}`. |
-| `results/` | Where the run's outputs and scores land when the experiment completes. |
+| `DESIGN.md` | The experiment design, written before the run: model, method, evaluation, scoring rubric, budget, and pre-registered limits. |
+| `experiment.py` | The run script: setup, LoRA training, before/after evaluation, deterministic scoring, token ledger. |
+| `RESULTS.md` | The results write-up: headline and per-family numbers, verbatim failure examples, and what the experiment does not establish. |
+| `results/` | The run's raw and scored outputs (`results.json`: every prompt + response, both arms) with a summary README. |
