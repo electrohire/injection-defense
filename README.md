@@ -61,6 +61,11 @@ The governance and harness pieces of the stack live in their own repositories:
 - **Spec-kit extension (governance):** [electrohire/spec-kit-aee](https://github.com/electrohire/spec-kit-aee)
 - **Benchmark harness:** [electrohire/spec-kit-aee-benchmark](https://github.com/electrohire/spec-kit-aee-benchmark)
 
+The model layer and its battery are published on Hugging Face:
+
+- **Tuned adapter (the experiment's artifact, with the full recipe and both evaluations):** [tpierson-eh/qwen2.5-1.5b-injection-resistance-lora](https://huggingface.co/tpierson-eh/qwen2.5-1.5b-injection-resistance-lora)
+- **The battery as a dataset (the scrubbed published edition):** [tpierson-eh/injection-defense-battery](https://huggingface.co/datasets/tpierson-eh/injection-defense-battery)
+
 ## Attribution
 
 An ElectroHire research project.
