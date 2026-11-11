@@ -2,7 +2,7 @@
 
 **A layered defense against prompt injection for AI agents — and an experiment that tests whether the innermost layer can be trained into a model.**
 
-An ElectroHire research project.
+An Axiovex Systems research project.
 
 ## The problem
 
@@ -68,4 +68,4 @@ The model layer and its battery are published on Hugging Face:
 
 ## Attribution
 
-An ElectroHire research project.
+An Axiovex Systems research project.

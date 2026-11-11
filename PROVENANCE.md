@@ -1,6 +1,6 @@
 # Provenance
 
-This repository was assembled from ElectroHire's internal research artifacts so the work can be read, checked, and reused publicly. This file records, for every migrated file, the SHA-256 of the original artifact and of the copy published here, so the migration can be audited: a copy whose published hash equals its original hash is byte-identical to the artifact the results were produced from.
+This repository was assembled from Axiovex Systems' internal research artifacts so the work can be read, checked, and reused publicly. This file records, for every migrated file, the SHA-256 of the original artifact and of the copy published here, so the migration can be audited: a copy whose published hash equals its original hash is byte-identical to the artifact the results were produced from.
 
 | Published file | Original SHA-256 | Published SHA-256 | Notes |
 |---|---|---|---|
@@ -41,3 +41,13 @@ The completed tuning experiment's artifacts and the red team's hardened screener
 ### Scrub note — `experiment/results/results.json`
 
 The internal original's prompts embed the battery fixtures verbatim, whose carrier prose is drawn from the *unscrubbed* original corpus. The published edition applies exactly the replacements used for the published corpus: a possessive personal name (15 occurrences across prompts and responses) was replaced with "the owner's", and the two remaining bare-name occurrences in model responses were replaced with role language ("the owner" / "the owner's"). The personal email address does not occur in this file (the fixture carrying it was not in the evaluation's control sample), so no email replacement was needed; this was verified, not assumed. After scrubbing, the file contains zero occurrences of the personal name and zero of the personal email address. Prompts' remaining carrier content matches the already-published scrubbed corpus. All scores, ids, and token counts were verified identical to the internal original after the scrub.
+
+## Amendment — 2026-11-10: attribution corrected to Axiovex Systems
+
+The research published in this repository is Axiovex Systems research. An earlier framing in this repository's own pages credited ElectroHire; that was wrong, and the program owner corrected it on 2026-11-04 (the published paper and blog were corrected the same day). On 2026-11-10 the correction was completed on this repository's pages:
+
+- `README.md`: the two "An ElectroHire research project" lines now read "An Axiovex Systems research project."
+- `docs/message-security-design.md`: the status line now reads "An Axiovex Systems research document."
+- This file: the opening sentence now reads "Axiovex Systems' internal research artifacts."
+
+No data, code, measurement, or result was changed. The repository remains hosted in the electrohire GitHub organization, and the sibling-repository links in the README are unchanged; hosting is not attribution.
