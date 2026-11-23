@@ -4,6 +4,10 @@
 
 An Axiovex Systems research project.
 
+![Terminal screenshot of the deterministic screener grading three inputs: a benign build report is cleared, a runbook step is noted as instruction-shaped but not agent-directed, and a planted instruction hiding in an uptime report is challenged by both screening layers](assets/injection-defense-screen.png)
+
+*The deterministic screener (`screener/screen.py`) at work: ordinary data passes, legitimate instruction-like data is noted, and a planted instruction is challenged with the reasons written out.*
+
 ## The problem
 
 Everything an AI agent reads while it works — tool outputs, files, web pages, email, even its own earlier output — is data. Sooner or later, some of that data contains sentences written to boss the agent around: *cancel the task, send the keys, delete the log, don't tell anyone.* If the agent cannot tell the difference between an instruction from its user and instruction-shaped text sitting inside data, those sentences can steer it. That is a prompt injection attack.
